@@ -18,6 +18,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "usb_device.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -72,17 +73,7 @@ typedef struct {
     double P[2][2];
 } Kalman_t;
 
-Kalman_t KalmanX = {
-        .Q_angle = 0.001f,
-        .Q_bias = 0.003f,
-        .R_measure = 0.03f
-};
 
-Kalman_t KalmanY = {
-        .Q_angle = 0.001f,
-        .Q_bias = 0.003f,
-        .R_measure = 0.03f,
-};
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -95,6 +86,7 @@ void MPU6050_Read_All(I2C_HandleTypeDef *I2Cx, MPU6050_t *DataStruct);
 double Kalman_getAngle(Kalman_t *Kalman, double newAngle, double newRate, double dt);
 uint32_t Timer_GetElapsed(TIM_HandleTypeDef *htim, uint32_t timer_start);
 void MPU6050_Calibration(I2C_HandleTypeDef *I2Cx, MPU6050_t *DataStruct);
+void SendOrientationData(float yaw, float pitch, float roll);
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -104,17 +96,11 @@ void MPU6050_Calibration(I2C_HandleTypeDef *I2Cx, MPU6050_t *DataStruct);
 
 /* Private variables ---------------------------------------------------------*/
 I2C_HandleTypeDef hi2c2;
-I2C_HandleTypeDef hi2c3;
-
-SPI_HandleTypeDef hspi2;
 
 TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim3;
 TIM_HandleTypeDef htim4;
 TIM_HandleTypeDef htim9;
-
-UART_HandleTypeDef huart1;
-UART_HandleTypeDef huart6;
 
 /* USER CODE BEGIN PV */
 MPU6050_t MPU6050;
@@ -127,17 +113,14 @@ static void MX_I2C2_Init(void);
 static void MX_TIM9_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_TIM3_Init(void);
-static void MX_I2C3_Init(void);
-static void MX_SPI2_Init(void);
 static void MX_TIM4_Init(void);
-static void MX_USART1_UART_Init(void);
-static void MX_USART6_UART_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+uint32_t sayac = 0;
 #define RAD_TO_DEG 57.295779513082320876798154814105
 float AngX, AngY;
 #define WHO_AM_I_REG 0x75
@@ -152,10 +135,25 @@ float AngX, AngY;
 // Setup MPU6050
 #define MPU6050_ADDR 0xD0
 const uint16_t i2c_timeout = 100;
-
+uint8_t mpu6050_baglanti_flag = 1;
 uint32_t timer;
 uint32_t elapsed_us;
 uint32_t end_us;
+uint8_t checkedd;
+
+Kalman_t KalmanX = {
+        .Q_angle = 0.001f,
+        .Q_bias = 0.003f,
+        .R_measure = 5.0f,
+};
+
+Kalman_t KalmanY = {
+        .Q_angle = 0.001f,
+        .Q_bias = 0.003f,
+        .R_measure = 5.0f,
+};
+
+char buffer[64]; // Yeterli uzunlukta bir buffer (float değerlerin metne çevrilmiş hali + boşluklar ve \n için)
 
 /* USER CODE END 0 */
 
@@ -192,21 +190,21 @@ int main(void)
   MX_TIM9_Init();
   MX_TIM2_Init();
   MX_TIM3_Init();
-  MX_I2C3_Init();
-  MX_SPI2_Init();
   MX_TIM4_Init();
-  MX_USART1_UART_Init();
-  MX_USART6_UART_Init();
+  MX_USB_DEVICE_Init();
   /* USER CODE BEGIN 2 */
   HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, SET);
   HAL_Delay(2000);
 
-  if (MPU6050_Init(&hi2c2) == 0)
+  checkedd = MPU6050_Init(&hi2c2); // kullanilan sensore gore degeri degisebilir mpu6050 = 104, mpu9250 = 102 107 gibi gibi degerler olabilir.
+  //eger ki check edilmisse 0 doner. check edilmezse okunan degeri geri doner. fonksiyona girip duzeltilmesi gerekebilir.
+  if (checkedd == 0)
   {
-	  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, RESET);
-	  MPU6050_Calibration(&hi2c2, &MPU6050);
+
+	  MPU6050_Calibration(&hi2c2, &MPU6050); // bağlanti kurulursa offset hata düzeltmesi yapilir. bu kod satiri kaldirilirsa offset kalibrasyonu yapilmaz. ham veri islenir.
+	  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, RESET); // baglanti kurulursa PC13 ledi yanar.
   }
-  //MPU6050_Init(&hi2c2);
+
   DWT_Init();
   /* USER CODE END 2 */
 
@@ -218,8 +216,12 @@ int main(void)
 
 	  MPU6050_Read_WithKalman(&hi2c2, &MPU6050);
 
-	  AngX = MPU6050.KalmanAngleX;
-	  AngY = MPU6050.KalmanAngleY;
+	  if(sayac > 100) // USB portundan veri gonderiliyor. istenilirse UART-TTL module ile uarttan gonderilebilir
+	  {
+		  //SendOrientationData((float)MPU6050.KalmanAngleZ,(float)MPU6050.KalmanAngleY,(float)MPU6050.KalmanAngleX);
+		  sayac = 0; // saadece 100 devirde 1 defa gonderilir. usb protokolu polling metod kullaniyor cunku
+	  }
+	  sayac++;
 
 	  end_us = DWT_GetMicros();
 	  elapsed_us = end_us - start_us;
@@ -251,8 +253,8 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.HSEState = RCC_HSE_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
-  RCC_OscInitStruct.PLL.PLLM = 12;
-  RCC_OscInitStruct.PLL.PLLN = 96;
+  RCC_OscInitStruct.PLL.PLLM = 25;
+  RCC_OscInitStruct.PLL.PLLN = 192;
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
   RCC_OscInitStruct.PLL.PLLQ = 4;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
@@ -310,78 +312,6 @@ static void MX_I2C2_Init(void)
 }
 
 /**
-  * @brief I2C3 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_I2C3_Init(void)
-{
-
-  /* USER CODE BEGIN I2C3_Init 0 */
-
-  /* USER CODE END I2C3_Init 0 */
-
-  /* USER CODE BEGIN I2C3_Init 1 */
-
-  /* USER CODE END I2C3_Init 1 */
-  hi2c3.Instance = I2C3;
-  hi2c3.Init.ClockSpeed = 400000;
-  hi2c3.Init.DutyCycle = I2C_DUTYCYCLE_2;
-  hi2c3.Init.OwnAddress1 = 0;
-  hi2c3.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
-  hi2c3.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
-  hi2c3.Init.OwnAddress2 = 0;
-  hi2c3.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
-  hi2c3.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
-  if (HAL_I2C_Init(&hi2c3) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN I2C3_Init 2 */
-
-  /* USER CODE END I2C3_Init 2 */
-
-}
-
-/**
-  * @brief SPI2 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_SPI2_Init(void)
-{
-
-  /* USER CODE BEGIN SPI2_Init 0 */
-
-  /* USER CODE END SPI2_Init 0 */
-
-  /* USER CODE BEGIN SPI2_Init 1 */
-
-  /* USER CODE END SPI2_Init 1 */
-  /* SPI2 parameter configuration*/
-  hspi2.Instance = SPI2;
-  hspi2.Init.Mode = SPI_MODE_MASTER;
-  hspi2.Init.Direction = SPI_DIRECTION_2LINES;
-  hspi2.Init.DataSize = SPI_DATASIZE_8BIT;
-  hspi2.Init.CLKPolarity = SPI_POLARITY_LOW;
-  hspi2.Init.CLKPhase = SPI_PHASE_1EDGE;
-  hspi2.Init.NSS = SPI_NSS_SOFT;
-  hspi2.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;
-  hspi2.Init.FirstBit = SPI_FIRSTBIT_MSB;
-  hspi2.Init.TIMode = SPI_TIMODE_DISABLE;
-  hspi2.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
-  hspi2.Init.CRCPolynomial = 10;
-  if (HAL_SPI_Init(&hspi2) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN SPI2_Init 2 */
-
-  /* USER CODE END SPI2_Init 2 */
-
-}
-
-/**
   * @brief TIM2 Initialization Function
   * @param None
   * @retval None
@@ -395,15 +325,14 @@ static void MX_TIM2_Init(void)
 
   TIM_ClockConfigTypeDef sClockSourceConfig = {0};
   TIM_MasterConfigTypeDef sMasterConfig = {0};
-  TIM_OC_InitTypeDef sConfigOC = {0};
 
   /* USER CODE BEGIN TIM2_Init 1 */
 
   /* USER CODE END TIM2_Init 1 */
   htim2.Instance = TIM2;
-  htim2.Init.Prescaler = 0;
+  htim2.Init.Prescaler = 96-1;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 4294967295;
+  htim2.Init.Period = 2000-1;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
@@ -415,40 +344,15 @@ static void MX_TIM2_Init(void)
   {
     Error_Handler();
   }
-  if (HAL_TIM_PWM_Init(&htim2) != HAL_OK)
-  {
-    Error_Handler();
-  }
   sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
   sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
   if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
   {
     Error_Handler();
   }
-  sConfigOC.OCMode = TIM_OCMODE_PWM1;
-  sConfigOC.Pulse = 0;
-  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
-  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
-  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_3) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_4) != HAL_OK)
-  {
-    Error_Handler();
-  }
   /* USER CODE BEGIN TIM2_Init 2 */
 
   /* USER CODE END TIM2_Init 2 */
-  HAL_TIM_MspPostInit(&htim2);
 
 }
 
@@ -466,15 +370,14 @@ static void MX_TIM3_Init(void)
 
   TIM_ClockConfigTypeDef sClockSourceConfig = {0};
   TIM_MasterConfigTypeDef sMasterConfig = {0};
-  TIM_OC_InitTypeDef sConfigOC = {0};
 
   /* USER CODE BEGIN TIM3_Init 1 */
 
   /* USER CODE END TIM3_Init 1 */
   htim3.Instance = TIM3;
-  htim3.Init.Prescaler = 0;
+  htim3.Init.Prescaler = 96-1;
   htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim3.Init.Period = 65535;
+  htim3.Init.Period = 2000-1;
   htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim3) != HAL_OK)
@@ -486,40 +389,15 @@ static void MX_TIM3_Init(void)
   {
     Error_Handler();
   }
-  if (HAL_TIM_PWM_Init(&htim3) != HAL_OK)
-  {
-    Error_Handler();
-  }
   sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
   sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
   if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
   {
     Error_Handler();
   }
-  sConfigOC.OCMode = TIM_OCMODE_PWM1;
-  sConfigOC.Pulse = 0;
-  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
-  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
-  if (HAL_TIM_PWM_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_TIM_PWM_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_TIM_PWM_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_3) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_TIM_PWM_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_4) != HAL_OK)
-  {
-    Error_Handler();
-  }
   /* USER CODE BEGIN TIM3_Init 2 */
 
   /* USER CODE END TIM3_Init 2 */
-  HAL_TIM_MspPostInit(&htim3);
 
 }
 
@@ -537,15 +415,14 @@ static void MX_TIM4_Init(void)
 
   TIM_ClockConfigTypeDef sClockSourceConfig = {0};
   TIM_MasterConfigTypeDef sMasterConfig = {0};
-  TIM_OC_InitTypeDef sConfigOC = {0};
 
   /* USER CODE BEGIN TIM4_Init 1 */
 
   /* USER CODE END TIM4_Init 1 */
   htim4.Instance = TIM4;
-  htim4.Init.Prescaler = 0;
+  htim4.Init.Prescaler = 960-1;
   htim4.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim4.Init.Period = 65535;
+  htim4.Init.Period = 2000-1;
   htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim4) != HAL_OK)
@@ -557,40 +434,15 @@ static void MX_TIM4_Init(void)
   {
     Error_Handler();
   }
-  if (HAL_TIM_PWM_Init(&htim4) != HAL_OK)
-  {
-    Error_Handler();
-  }
   sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
   sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
   if (HAL_TIMEx_MasterConfigSynchronization(&htim4, &sMasterConfig) != HAL_OK)
   {
     Error_Handler();
   }
-  sConfigOC.OCMode = TIM_OCMODE_PWM1;
-  sConfigOC.Pulse = 0;
-  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
-  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
-  if (HAL_TIM_PWM_ConfigChannel(&htim4, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_TIM_PWM_ConfigChannel(&htim4, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_TIM_PWM_ConfigChannel(&htim4, &sConfigOC, TIM_CHANNEL_3) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_TIM_PWM_ConfigChannel(&htim4, &sConfigOC, TIM_CHANNEL_4) != HAL_OK)
-  {
-    Error_Handler();
-  }
   /* USER CODE BEGIN TIM4_Init 2 */
 
   /* USER CODE END TIM4_Init 2 */
-  HAL_TIM_MspPostInit(&htim4);
 
 }
 
@@ -612,7 +464,7 @@ static void MX_TIM9_Init(void)
 
   /* USER CODE END TIM9_Init 1 */
   htim9.Instance = TIM9;
-  htim9.Init.Prescaler = 100-1;
+  htim9.Init.Prescaler = 96-1;
   htim9.Init.CounterMode = TIM_COUNTERMODE_UP;
   htim9.Init.Period = 65535;
   htim9.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
@@ -633,72 +485,6 @@ static void MX_TIM9_Init(void)
 }
 
 /**
-  * @brief USART1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_USART1_UART_Init(void)
-{
-
-  /* USER CODE BEGIN USART1_Init 0 */
-
-  /* USER CODE END USART1_Init 0 */
-
-  /* USER CODE BEGIN USART1_Init 1 */
-
-  /* USER CODE END USART1_Init 1 */
-  huart1.Instance = USART1;
-  huart1.Init.BaudRate = 115200;
-  huart1.Init.WordLength = UART_WORDLENGTH_8B;
-  huart1.Init.StopBits = UART_STOPBITS_1;
-  huart1.Init.Parity = UART_PARITY_NONE;
-  huart1.Init.Mode = UART_MODE_TX_RX;
-  huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-  huart1.Init.OverSampling = UART_OVERSAMPLING_16;
-  if (HAL_UART_Init(&huart1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN USART1_Init 2 */
-
-  /* USER CODE END USART1_Init 2 */
-
-}
-
-/**
-  * @brief USART6 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_USART6_UART_Init(void)
-{
-
-  /* USER CODE BEGIN USART6_Init 0 */
-
-  /* USER CODE END USART6_Init 0 */
-
-  /* USER CODE BEGIN USART6_Init 1 */
-
-  /* USER CODE END USART6_Init 1 */
-  huart6.Instance = USART6;
-  huart6.Init.BaudRate = 115200;
-  huart6.Init.WordLength = UART_WORDLENGTH_8B;
-  huart6.Init.StopBits = UART_STOPBITS_1;
-  huart6.Init.Parity = UART_PARITY_NONE;
-  huart6.Init.Mode = UART_MODE_TX_RX;
-  huart6.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-  huart6.Init.OverSampling = UART_OVERSAMPLING_16;
-  if (HAL_UART_Init(&huart6) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN USART6_Init 2 */
-
-  /* USER CODE END USART6_Init 2 */
-
-}
-
-/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -713,17 +499,11 @@ static void MX_GPIO_Init(void)
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOH_CLK_ENABLE();
-  __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
+  __HAL_RCC_GPIOA_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
-
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_2|GPIO_PIN_12|GPIO_PIN_5, GPIO_PIN_RESET);
-
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_15, GPIO_PIN_RESET);
 
   /*Configure GPIO pin : PC13 */
   GPIO_InitStruct.Pin = GPIO_PIN_13;
@@ -731,20 +511,6 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : PB2 PB12 PB5 */
-  GPIO_InitStruct.Pin = GPIO_PIN_2|GPIO_PIN_12|GPIO_PIN_5;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : PA15 */
-  GPIO_InitStruct.Pin = GPIO_PIN_15;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
@@ -761,7 +527,7 @@ void DWT_Init(void)
 
 uint32_t DWT_GetMicros(void)
 {
-    return DWT->CYCCNT / (100000000 / 1000000);   // cycle → µs dönüşümü
+    return DWT->CYCCNT / (96000000 / 1000000);   // cycle → µs dönüşümü. benim projem 96mhz oldugu icin 96000000 yazdim.
 }
 
 uint8_t MPU6050_Init(I2C_HandleTypeDef *I2Cx) {
@@ -772,14 +538,14 @@ uint8_t MPU6050_Init(I2C_HandleTypeDef *I2Cx) {
 
     HAL_I2C_Mem_Read(I2Cx, MPU6050_ADDR, WHO_AM_I_REG, 1, &check, 1, i2c_timeout);
 
-    if (check == 104)  // 0x68 will be returned by the sensor if everything goes well
+    if (check == 104)  // 0x68 will be returned by the sensor if everything goes well 104
     {
         // power management register 0X6B we should write all 0's to wake the sensor up
         Data = 0;
         HAL_I2C_Mem_Write(I2Cx, MPU6050_ADDR, PWR_MGMT_1_REG, 1, &Data, 1, i2c_timeout);
 
         // DLP settings
-        Data = 0x02;
+        Data = 0x03;
         HAL_I2C_Mem_Write(I2Cx, MPU6050_ADDR, 0x1A, 1, &Data, 1, i2c_timeout);
 
         // Set DATA RATE of 1KHz by writing SMPLRT_DIV register
@@ -797,7 +563,7 @@ uint8_t MPU6050_Init(I2C_HandleTypeDef *I2Cx) {
         HAL_I2C_Mem_Write(I2Cx, MPU6050_ADDR, GYRO_CONFIG_REG, 1, &Data, 1, i2c_timeout);
         return 0;
     }
-    return 1;
+    return check;
 }
 
 double Kalman_getAngle(Kalman_t *Kalman, double newAngle, double newRate, double dt) {
@@ -830,56 +596,65 @@ double Kalman_getAngle(Kalman_t *Kalman, double newAngle, double newRate, double
 };
 
 void MPU6050_Read_WithKalman(I2C_HandleTypeDef *I2Cx, MPU6050_t *DataStruct) {
-	static uint32_t timer_us = 0;  // Bu static değişken fonksiyon içinde tutulur
+    static uint32_t timer_us = 0;
     uint8_t Rec_Data[14];
     int16_t temp;
 
-    // Read 14 BYTES of data starting from ACCEL_XOUT_H register
-
     HAL_I2C_Mem_Read(I2Cx, MPU6050_ADDR, ACCEL_XOUT_H_REG, 1, Rec_Data, 14, i2c_timeout);
 
-    DataStruct->Accel_X_RAW = ((int16_t) (Rec_Data[0] << 8 | Rec_Data[1])) - DataStruct->Accel_X_RAW_K;
-    DataStruct->Accel_Y_RAW = ((int16_t) (Rec_Data[2] << 8 | Rec_Data[3])) - DataStruct->Accel_Y_RAW_K;
-    DataStruct->Accel_Z_RAW = ((int16_t) (Rec_Data[4] << 8 | Rec_Data[5])) - DataStruct->Accel_Z_RAW_K;//
-    temp = (int16_t) (Rec_Data[6] << 8 | Rec_Data[7]);
-    DataStruct->Gyro_X_RAW = ((int16_t)   (Rec_Data[8] << 8 | Rec_Data[9])) - DataStruct->Gyro_X_RAW_K;
-    DataStruct->Gyro_Y_RAW = ((int16_t) (Rec_Data[10] << 8 | Rec_Data[11])) - DataStruct->Gyro_Y_RAW_K;
-    DataStruct->Gyro_Z_RAW = ((int16_t) (Rec_Data[12] << 8 | Rec_Data[13])) - DataStruct->Gyro_Z_RAW_K;
+    DataStruct->Accel_X_RAW = ((int16_t)(Rec_Data[0] << 8 | Rec_Data[1])) - DataStruct->Accel_X_RAW_K;
+    DataStruct->Accel_Y_RAW = ((int16_t)(Rec_Data[2] << 8 | Rec_Data[3])) - DataStruct->Accel_Y_RAW_K;
+    DataStruct->Accel_Z_RAW = ((int16_t)(Rec_Data[4] << 8 | Rec_Data[5])) - DataStruct->Accel_Z_RAW_K;
+    temp = (int16_t)(Rec_Data[6] << 8 | Rec_Data[7]);
+    DataStruct->Gyro_X_RAW = ((int16_t)(Rec_Data[8] << 8 | Rec_Data[9])) - DataStruct->Gyro_X_RAW_K;
+    DataStruct->Gyro_Y_RAW = ((int16_t)(Rec_Data[10] << 8 | Rec_Data[11])) - DataStruct->Gyro_Y_RAW_K;
+    DataStruct->Gyro_Z_RAW = ((int16_t)(Rec_Data[12] << 8 | Rec_Data[13])) - DataStruct->Gyro_Z_RAW_K;
 
     DataStruct->Ax = DataStruct->Accel_X_RAW / 16384.0;
     DataStruct->Ay = DataStruct->Accel_Y_RAW / 16384.0;
     DataStruct->Az = DataStruct->Accel_Z_RAW / 16384.0;
-    DataStruct->Temperature = (float) ((int16_t) temp / (float) 340.0 + (float) 36.53);
+    DataStruct->Temperature = (float)((int16_t)temp / (float)340.0 + (float)36.53);
     DataStruct->Gx = DataStruct->Gyro_X_RAW / 131.0;
     DataStruct->Gy = DataStruct->Gyro_Y_RAW / 131.0;
     DataStruct->Gz = DataStruct->Gyro_Z_RAW / 131.0;
 
-    // Kalman angle solve
     uint32_t now_us = DWT_GetMicros();
     double dt = (now_us - timer_us) / 1000000.0;
     timer_us = now_us;
 
+    // Roll ve Pitch hesaplamaları
+    double roll = atan2(DataStruct->Ay, sqrt(DataStruct->Ax * DataStruct->Ax + DataStruct->Az * DataStruct->Az)) * RAD_TO_DEG;
+    double pitch = atan2(-DataStruct->Ax, DataStruct->Az) * RAD_TO_DEG;
+
+    // Pitch için ±90° kontrolü (Gimbal lock önleme)
+        if ((pitch < -90 && DataStruct->KalmanAngleY > 90) || (pitch > 90 && DataStruct->KalmanAngleY < -90))
+        {
+            KalmanY.angle = pitch;
+            DataStruct->KalmanAngleY = pitch;
+        }
+        else
+        {
+            DataStruct->KalmanAngleY = Kalman_getAngle(&KalmanY, pitch, DataStruct->Gy, dt);
+        }
+
+        // Roll için ±90° kontrolü (Gimbal lock önleme)
+        if ((roll < -90 && DataStruct->KalmanAngleX > 90) || (roll > 90 && DataStruct->KalmanAngleX < -90))
+        {
+            KalmanX.angle = roll;
+            DataStruct->KalmanAngleX = roll;
+        }
+        else
+        {
+            DataStruct->KalmanAngleX = Kalman_getAngle(&KalmanX, roll, DataStruct->Gx, dt);
+        }
+
+    // Yaw için jiroskop entegrasyonu
     DataStruct->KalmanAngleZ += DataStruct->Gz * dt;
-    double roll;
-    double roll_sqrt = sqrt(
-            DataStruct->Accel_X_RAW * DataStruct->Accel_X_RAW + DataStruct->Accel_Z_RAW * DataStruct->Accel_Z_RAW);
-    if (roll_sqrt != 0.0) {
-        roll = atan(DataStruct->Accel_Y_RAW / roll_sqrt) * RAD_TO_DEG;
-    } else {
-        roll = 0.0;
-    }
-    double pitch = atan2(-DataStruct->Accel_X_RAW, DataStruct->Accel_Z_RAW) * RAD_TO_DEG;
-    if ((pitch < -90 && DataStruct->KalmanAngleY > 90) || (pitch > 90 && DataStruct->KalmanAngleY < -90)) {
-        KalmanY.angle = pitch;
-        DataStruct->KalmanAngleY = pitch;
-    } else {
-        DataStruct->KalmanAngleY = Kalman_getAngle(&KalmanY, pitch, DataStruct->Gy, dt);
-    }
-    if (fabs(DataStruct->KalmanAngleY) > 90)
+
+    // Jiroskop yön düzeltmesi (pitch ±90° durumunda)
+    if (fabs(DataStruct->KalmanAngleY) > 90) {
         DataStruct->Gx = -DataStruct->Gx;
-    DataStruct->KalmanAngleX = Kalman_getAngle(&KalmanX, roll, DataStruct->Gy, dt);
-
-
+    }
 }
 
 uint32_t Timer_GetElapsed(TIM_HandleTypeDef *htim, uint32_t timer_start) {
@@ -942,6 +717,15 @@ void MPU6050_Read_All(I2C_HandleTypeDef *I2Cx, MPU6050_t *DataStruct) {
     DataStruct->Gx = DataStruct->Gyro_X_RAW / 131.0;
     DataStruct->Gy = DataStruct->Gyro_Y_RAW / 131.0;
     DataStruct->Gz = DataStruct->Gyro_Z_RAW / 131.0;
+}
+
+void SendOrientationData(float yaw, float pitch, float roll)
+{
+    int len = snprintf(buffer, sizeof(buffer), "%.2f %.2f %.2f\n", yaw, pitch, roll);
+
+    if (len > 0 && len < sizeof(buffer)) {
+        CDC_Transmit_FS((uint8_t*)buffer, len);
+    }
 }
 /* USER CODE END 4 */
 
