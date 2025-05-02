@@ -41,8 +41,8 @@ def read_serial():
                 values = line.split()
                 if len(values) >= 3:  # Yeterli veri var mı kontrol et
                     yaw = float(values[0])
-                    pitch = float(values[1])
-                    roll = -float(values[2])
+                    pitch = float(values[2])
+                    roll = float(values[1])
                     last_yaw, last_pitch, last_roll = yaw, pitch, roll
                     return yaw, pitch, roll
             return last_yaw, last_pitch, last_roll  # Veri yoksa son bilinen değerleri döndür
