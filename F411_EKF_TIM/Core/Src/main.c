@@ -78,8 +78,6 @@ typedef struct {
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-void DWT_Init(void);
-uint32_t DWT_GetMicros(void);
 uint8_t MPU6050_Init(I2C_HandleTypeDef *I2Cx);
 void MPU6050_Read_WithKalman(I2C_HandleTypeDef *I2Cx, MPU6050_t *DataStruct);
 void MPU6050_Read_All(I2C_HandleTypeDef *I2Cx, MPU6050_t *DataStruct);
@@ -523,17 +521,6 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-void DWT_Init(void)
-{
-    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;     // DWT modülünü aktif et
-    DWT->CYCCNT = 0;                                     // Sayaç sıfırla
-    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;                // Sayaç çalıştır
-}
-
-uint32_t DWT_GetMicros(void)
-{
-    return DWT->CYCCNT / (96000000 / 1000000);   // cycle → µs dönüşümü. benim projem 96mhz oldugu icin 96000000 yazdim.
-}
 
 uint8_t MPU6050_Init(I2C_HandleTypeDef *I2Cx) {
     uint8_t check;
