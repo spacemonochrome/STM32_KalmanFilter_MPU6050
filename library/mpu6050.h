@@ -8,7 +8,7 @@
 #ifndef INC_MPU6050_H_
 #define INC_MPU6050_H_
 
-#include "stm32f1xx_hal.h"
+#include "main.h"
 
 typedef struct {
     int16_t Accel_X_RAW;
