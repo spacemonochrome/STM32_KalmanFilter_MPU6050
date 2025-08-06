@@ -1,1 +1,3 @@
 # STM32 MPU6050 6DOF KALMAN FILTER
+
+https://youtu.be/EMkmC6QPMf4
